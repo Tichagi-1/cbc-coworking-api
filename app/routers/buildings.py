@@ -1,13 +1,14 @@
 import os
 import shutil
+from datetime import datetime
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 
 from app.database import get_db
-from app.models import Building, Floor, Zone, User, UserRole
+from app.models import Building, Floor, Lease, Unit, Zone, User, UserRole
 from app.core.auth import get_current_user, require_role
 from app.config import settings
 
@@ -182,6 +183,62 @@ async def get_zones(
 ):
     result = await db.execute(select(Zone).where(Zone.floor_id == floor_id))
     return result.scalars().all()
+
+
+@router.get("/{building_id}/floors/{floor_id}/snapshot")
+async def floor_snapshot(
+    building_id: int,
+    floor_id: int,
+    date: str = Query(..., description="Snapshot date YYYY-MM-DD"),
+    db: AsyncSession = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    """
+    Return zones for a floor with status synthesized from lease history
+    as of `date`. A zone is "occupied" if its linked unit has any lease
+    where start_date <= date AND end_date >= date, otherwise "vacant".
+    Reserved is not derivable from history; only occupied/vacant.
+    """
+    try:
+        snapshot_dt = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+
+    zones_result = await db.execute(select(Zone).where(Zone.floor_id == floor_id))
+    zones = zones_result.scalars().all()
+
+    unit_ids = [z.unit_id for z in zones if z.unit_id is not None]
+    units_by_id: dict[int, Unit] = {}
+    occupied_unit_ids: set[int] = set()
+
+    if unit_ids:
+        units_result = await db.execute(select(Unit).where(Unit.id.in_(unit_ids)))
+        for u in units_result.scalars().all():
+            units_by_id[u.id] = u
+
+        leases_result = await db.execute(
+            select(Lease).where(
+                Lease.unit_id.in_(unit_ids),
+                Lease.start_date <= snapshot_dt,
+                Lease.end_date >= snapshot_dt,
+            )
+        )
+        occupied_unit_ids = {l.unit_id for l in leases_result.scalars().all()}
+
+    return [
+        {
+            "id": z.id,
+            "floor_id": z.floor_id,
+            "unit_id": z.unit_id,
+            "points": z.points,
+            "label": z.label or (units_by_id.get(z.unit_id).name if z.unit_id in units_by_id else None),
+            "zone_type": z.zone_type,
+            "status": (
+                "occupied" if z.unit_id and z.unit_id in occupied_unit_ids else "vacant"
+            ) if z.unit_id else None,
+        }
+        for z in zones
+    ]
 
 
 @router.put("/{building_id}/floors/{floor_id}/zones")
