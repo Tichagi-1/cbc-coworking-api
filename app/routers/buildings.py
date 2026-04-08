@@ -47,6 +47,11 @@ class FloorOut(BaseModel):
         from_attributes = True
 
 
+class FloorCreate(BaseModel):
+    number: int
+    name: str | None = None
+
+
 class ZoneOut(BaseModel):
     id: int
     floor_id: int
@@ -91,6 +96,24 @@ async def create_building(
 async def list_floors(building_id: int, db: AsyncSession = Depends(get_db), _=Depends(get_current_user)):
     result = await db.execute(select(Floor).where(Floor.building_id == building_id))
     return result.scalars().all()
+
+
+@router.post("/{building_id}/floors", response_model=FloorOut)
+async def create_floor(
+    building_id: int,
+    data: FloorCreate,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_role(UserRole.admin, UserRole.manager)),
+):
+    building = await db.get(Building, building_id)
+    if not building:
+        raise HTTPException(status_code=404, detail="Building not found")
+
+    floor = Floor(building_id=building_id, number=data.number, name=data.name)
+    db.add(floor)
+    await db.commit()
+    await db.refresh(floor)
+    return floor
 
 
 @router.post("/{building_id}/floors/{floor_id}/plan")
