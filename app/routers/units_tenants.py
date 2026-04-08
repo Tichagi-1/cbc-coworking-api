@@ -54,6 +54,18 @@ async def list_units(
     return result.scalars().all()
 
 
+@units_router.get("/{unit_id}", response_model=UnitOut)
+async def get_unit(
+    unit_id: int,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    unit = await db.get(Unit, unit_id)
+    if not unit:
+        raise HTTPException(status_code=404, detail="Unit not found")
+    return unit
+
+
 @units_router.post("/", response_model=UnitOut)
 async def create_unit(
     data: UnitCreate,

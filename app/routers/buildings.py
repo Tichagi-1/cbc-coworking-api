@@ -98,6 +98,22 @@ async def list_floors(building_id: int, db: AsyncSession = Depends(get_db), _=De
     return result.scalars().all()
 
 
+@router.get("/{building_id}/floors/{floor_id}", response_model=FloorOut)
+async def get_floor(
+    building_id: int,
+    floor_id: int,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    result = await db.execute(
+        select(Floor).where(Floor.id == floor_id, Floor.building_id == building_id)
+    )
+    floor = result.scalar_one_or_none()
+    if not floor:
+        raise HTTPException(status_code=404, detail="Floor not found")
+    return floor
+
+
 @router.post("/{building_id}/floors", response_model=FloorOut)
 async def create_floor(
     building_id: int,
