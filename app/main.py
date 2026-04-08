@@ -34,6 +34,8 @@ app.mount("/static", StaticFiles(directory=str(upload_dir)), name="static")
 
 @app.on_event("startup")
 async def startup():
+    import os
+    os.makedirs("/data/uploads/floor_plans", exist_ok=True)
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
