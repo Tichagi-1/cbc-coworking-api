@@ -2,8 +2,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
+from sqlalchemy import text
 
 from app.config import settings
+from app.database import engine, Base
+import app.models  # noqa: F401 — register models with Base.metadata
 from app.routers.auth import router as auth_router
 from app.routers.buildings import router as buildings_router
 from app.routers.units_tenants import units_router, tenants_router
@@ -33,6 +36,12 @@ app.include_router(auth_router)
 app.include_router(buildings_router)
 app.include_router(units_router)
 app.include_router(tenants_router)
+
+
+@app.on_event("startup")
+async def startup():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
 
 @app.get("/health")
