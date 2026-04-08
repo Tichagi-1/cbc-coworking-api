@@ -31,17 +31,21 @@ upload_dir = Path(settings.UPLOAD_DIR)
 upload_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(upload_dir)), name="static")
 
+
+@app.on_event("startup")
+async def startup():
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception as e:
+        print(f"DB init warning: {e}")
+
+
 # Routers
 app.include_router(auth_router)
 app.include_router(buildings_router)
 app.include_router(units_router)
 app.include_router(tenants_router)
-
-
-@app.on_event("startup")
-async def startup():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
 
 
 @app.get("/health")
