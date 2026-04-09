@@ -8,7 +8,17 @@ from sqlalchemy import select
 from pydantic import BaseModel
 
 from app.database import get_db
-from app.models import Building, Floor, Lease, Unit, Zone, User, UserRole
+from app.models import (
+    Booking,
+    Building,
+    Floor,
+    Lease,
+    MeetingRoom,
+    Unit,
+    Zone,
+    User,
+    UserRole,
+)
 from app.core.auth import get_current_user, require_role
 from app.config import settings
 
@@ -161,13 +171,20 @@ async def update_floor(
     return floor
 
 
-@router.delete("/{building_id}/floors/{floor_id}")
+@router.delete("/{building_id}/floors/{floor_id}", status_code=204)
 async def delete_floor(
     building_id: int,
     floor_id: int,
     db: AsyncSession = Depends(get_db),
     _=Depends(require_role(UserRole.admin, UserRole.manager)),
 ):
+    """
+    Cascade-delete a floor and everything that hangs off it. Order is
+    important because none of the FKs have ON DELETE CASCADE configured:
+        bookings → meeting_rooms → leases → zones → units → floor
+    Coin transactions reference bookings only via a non-FK integer
+    column, so they're left alone.
+    """
     result = await db.execute(
         select(Floor).where(Floor.id == floor_id, Floor.building_id == building_id)
     )
@@ -175,14 +192,63 @@ async def delete_floor(
     if not floor:
         raise HTTPException(status_code=404, detail="Floor not found")
 
-    # Delete zones first (no FK cascade configured)
-    zones_result = await db.execute(select(Zone).where(Zone.floor_id == floor_id))
-    for z in zones_result.scalars().all():
-        await db.delete(z)
+    try:
+        # Units on this floor
+        units_result = await db.execute(
+            select(Unit).where(Unit.floor_id == floor_id)
+        )
+        units = units_result.scalars().all()
+        unit_ids = [u.id for u in units]
 
-    await db.delete(floor)
-    await db.commit()
-    return {"deleted": floor_id}
+        if unit_ids:
+            # Meeting rooms linked to those units
+            mr_result = await db.execute(
+                select(MeetingRoom).where(MeetingRoom.unit_id.in_(unit_ids))
+            )
+            meeting_rooms = mr_result.scalars().all()
+            mr_ids = [m.id for m in meeting_rooms]
+
+            # Bookings for those meeting rooms
+            if mr_ids:
+                bookings_result = await db.execute(
+                    select(Booking).where(Booking.room_id.in_(mr_ids))
+                )
+                for b in bookings_result.scalars().all():
+                    await db.delete(b)
+
+            # Meeting rooms themselves
+            for mr in meeting_rooms:
+                await db.delete(mr)
+
+            # Leases for those units
+            leases_result = await db.execute(
+                select(Lease).where(Lease.unit_id.in_(unit_ids))
+            )
+            for lease in leases_result.scalars().all():
+                await db.delete(lease)
+
+        # Zones on this floor (also covers any zones with unit_id in unit_ids,
+        # since zones live with their floor)
+        zones_result = await db.execute(
+            select(Zone).where(Zone.floor_id == floor_id)
+        )
+        for z in zones_result.scalars().all():
+            await db.delete(z)
+
+        # Units on the floor
+        for u in units:
+            await db.delete(u)
+
+        # Finally the floor itself
+        await db.delete(floor)
+        await db.commit()
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500, detail=f"Failed to delete floor: {e}"
+        )
 
 
 @router.post("/{building_id}/floors/{floor_id}/plan")
