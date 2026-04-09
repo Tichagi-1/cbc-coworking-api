@@ -10,6 +10,7 @@ import app.models  # noqa: F401 — register models with Base.metadata
 from app.routers.auth import router as auth_router
 from app.routers.buildings import router as buildings_router
 from app.routers.units_tenants import units_router, tenants_router
+from app.routers.bookings import rooms_router, bookings_router
 
 app = FastAPI(
     title="CBC Coworking OS — API",
@@ -61,6 +62,8 @@ app.include_router(auth_router)
 app.include_router(buildings_router)
 app.include_router(units_router)
 app.include_router(tenants_router)
+app.include_router(rooms_router)
+app.include_router(bookings_router)
 
 
 @app.get("/health")

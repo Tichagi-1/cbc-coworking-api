@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from datetime import datetime
 
 from app.database import get_db
-from app.models import Unit, Tenant, Lease, CoinTransaction, UnitStatus, UnitType, UserRole, CoinTxReason
+from app.models import Unit, Tenant, Lease, CoinTransaction, UnitStatus, UnitType, User, UserRole, CoinTxReason
 from app.core.auth import get_current_user, require_role
 
 # ── Units ──────────────────────────────────────────────────────────────────
@@ -166,6 +166,16 @@ class CoinAdjust(BaseModel):
 async def list_tenants(db: AsyncSession = Depends(get_db), _=Depends(get_current_user)):
     result = await db.execute(select(Tenant))
     return result.scalars().all()
+
+
+@tenants_router.get("/me", response_model=TenantOut | None)
+async def get_my_tenant(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Return the tenant record linked to the current user, or null."""
+    result = await db.execute(select(Tenant).where(Tenant.user_id == user.id))
+    return result.scalar_one_or_none()
 
 
 @tenants_router.post("/", response_model=TenantOut)
