@@ -17,11 +17,21 @@ class UserRole(str, enum.Enum):
     owner = "owner"
 
 
+# Legacy — kept so the existing PG enum type and old Zone.zone_type column
+# (now nullable) still resolve. New code should use ResourceType.
 class UnitType(str, enum.Enum):
     office = "office"
     meeting_room = "meeting_room"
     hot_desk = "hot_desk"
     open_space = "open_space"
+
+
+class ResourceType(str, enum.Enum):
+    office = "office"
+    meeting_room = "meeting_room"
+    hot_desk = "hot_desk"
+    open_space = "open_space"
+    amenity = "amenity"
 
 
 class UnitStatus(str, enum.Enum):
@@ -91,8 +101,50 @@ class Floor(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     building: Mapped[Building] = relationship(back_populates="floors")
-    units: Mapped[list["Unit"]] = relationship(back_populates="floor")
     zones: Mapped[list["Zone"]] = relationship(back_populates="floor")
+
+
+class Resource(Base):
+    """
+    Unified catalog row for any bookable / leasable space:
+    offices, meeting rooms, hot desks, open spaces, amenities.
+    """
+    __tablename__ = "resources"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    building_id: Mapped[int] = mapped_column(ForeignKey("buildings.id"))
+    floor_id: Mapped[int | None] = mapped_column(ForeignKey("floors.id"), nullable=True)
+
+    name: Mapped[str] = mapped_column(String(255))
+    resource_type: Mapped[ResourceType] = mapped_column(Enum(ResourceType))
+    status: Mapped[UnitStatus] = mapped_column(Enum(UnitStatus), default=UnitStatus.vacant)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    photos: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    tenant_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # office / hot_desk / open_space fields
+    area_m2: Mapped[float | None] = mapped_column(Float, nullable=True)
+    seats: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    monthly_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rate_period: Mapped[str | None] = mapped_column(String(20), nullable=True, default="month")
+
+    # meeting_room fields
+    capacity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rate_coins_per_hour: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rate_money_per_hour: Mapped[float | None] = mapped_column(Float, nullable=True)
+    amenities: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+    # amenity fields
+    rate_per_hour: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_standalone_bookable: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    zoho_contract_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    building: Mapped[Building] = relationship()
+    floor: Mapped["Floor | None"] = relationship()
+    zones: Mapped[list["Zone"]] = relationship(back_populates="resource")
+    bookings: Mapped[list["Booking"]] = relationship(back_populates="resource")
 
 
 class Zone(Base):
@@ -101,39 +153,17 @@ class Zone(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     floor_id: Mapped[int] = mapped_column(ForeignKey("floors.id"))
-    unit_id: Mapped[int | None] = mapped_column(ForeignKey("units.id"), nullable=True)
+    # NEW: link to a Resource. Old unit_id and zone_type columns are kept
+    # in the DB as nullable legacy and not exposed by the model anymore.
+    resource_id: Mapped[int | None] = mapped_column(
+        ForeignKey("resources.id"), nullable=True
+    )
     points: Mapped[dict] = mapped_column(JSON)  # [{x, y}, ...]
     label: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    zone_type: Mapped[UnitType] = mapped_column(Enum(UnitType))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     floor: Mapped[Floor] = relationship(back_populates="zones")
-    unit: Mapped["Unit | None"] = relationship(back_populates="zone")
-
-
-class Unit(Base):
-    __tablename__ = "units"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    floor_id: Mapped[int] = mapped_column(ForeignKey("floors.id"))
-    name: Mapped[str] = mapped_column(String(100))          # e.g. "Office 201"
-    unit_type: Mapped[UnitType] = mapped_column(Enum(UnitType))
-    status: Mapped[UnitStatus] = mapped_column(Enum(UnitStatus), default=UnitStatus.vacant)
-    area_m2: Mapped[float] = mapped_column(Float)
-    seats: Mapped[int] = mapped_column(Integer, default=1)
-    monthly_rate: Mapped[float] = mapped_column(Float, default=0)
-    # "month" | "day" | "biweekly" | "hour" — meaning of monthly_rate column
-    rate_period: Mapped[str | None] = mapped_column(String(20), nullable=True, default="month")
-    # Manually entered tenant name. Will sync from Zoho Contracts in future.
-    tenant_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    photos: Mapped[list | None] = mapped_column(JSON, nullable=True)  # [url, ...]
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-
-    floor: Mapped[Floor] = relationship(back_populates="units")
-    zone: Mapped["Zone | None"] = relationship(back_populates="unit")
-    leases: Mapped[list["Lease"]] = relationship(back_populates="unit")
-    meeting_room: Mapped["MeetingRoom | None"] = relationship(back_populates="unit")
+    resource: Mapped["Resource | None"] = relationship(back_populates="zones")
 
 
 class Tenant(Base):
@@ -144,21 +174,25 @@ class Tenant(Base):
     company_name: Mapped[str] = mapped_column(String(255))
     contact_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     contact_phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    plan_type: Mapped[str | None] = mapped_column(String(100), nullable=True)  # e.g. "Enterprise"
+    plan_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
     monthly_rate: Mapped[float] = mapped_column(Float, default=0)
     coin_balance: Mapped[float] = mapped_column(Float, default=0)
-    # Coins = 25% of monthly_rate, or set manually by admin
     is_resident: Mapped[bool] = mapped_column(Boolean, default=True)
     zoho_contact_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     user: Mapped[User] = relationship(back_populates="tenant")
-    leases: Mapped[list["Lease"]] = relationship(back_populates="tenant")
     bookings: Mapped[list["Booking"]] = relationship(back_populates="tenant")
     coin_transactions: Mapped[list["CoinTransaction"]] = relationship(back_populates="tenant")
 
 
 class Lease(Base):
+    """
+    Kept so the snapshot endpoint and any future lease history feature
+    can still query the existing leases table. The Tenant.leases
+    relationship has been intentionally dropped — query leases directly
+    via select(Lease).where(...) instead.
+    """
     __tablename__ = "leases"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -172,31 +206,16 @@ class Lease(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
-    unit: Mapped[Unit] = relationship(back_populates="leases")
-    tenant: Mapped[Tenant] = relationship(back_populates="leases")
-
-
-class MeetingRoom(Base):
-    __tablename__ = "meeting_rooms"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    unit_id: Mapped[int] = mapped_column(ForeignKey("units.id"), unique=True)
-    name: Mapped[str] = mapped_column(String(100))
-    capacity: Mapped[int] = mapped_column(Integer)
-    rate_coins_per_hour: Mapped[float] = mapped_column(Float)   # for residents
-    rate_money_per_hour: Mapped[float] = mapped_column(Float)   # for non-residents / overage
-    amenities: Mapped[list | None] = mapped_column(JSON, nullable=True)  # ["TV", "Whiteboard"]
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-
-    unit: Mapped[Unit] = relationship(back_populates="meeting_room")
-    bookings: Mapped[list["Booking"]] = relationship(back_populates="room")
-
 
 class Booking(Base):
     __tablename__ = "bookings"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    room_id: Mapped[int] = mapped_column(ForeignKey("meeting_rooms.id"))
+    # NEW: resource_id is the canonical link. The old room_id column is
+    # kept in the DB as nullable legacy.
+    resource_id: Mapped[int | None] = mapped_column(
+        ForeignKey("resources.id"), nullable=True
+    )
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
     start_time: Mapped[datetime] = mapped_column(DateTime)
     end_time: Mapped[datetime] = mapped_column(DateTime)
@@ -204,10 +223,10 @@ class Booking(Base):
     coins_charged: Mapped[float] = mapped_column(Float, default=0)
     money_charged: Mapped[float] = mapped_column(Float, default=0)
     zoho_invoice_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    source: Mapped[str] = mapped_column(String(50), default="web")  # web | telegram
+    source: Mapped[str] = mapped_column(String(50), default="web")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
-    room: Mapped[MeetingRoom] = relationship(back_populates="bookings")
+    resource: Mapped["Resource | None"] = relationship(back_populates="bookings")
     tenant: Mapped[Tenant] = relationship(back_populates="bookings")
 
 
@@ -216,9 +235,9 @@ class CoinTransaction(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
-    delta: Mapped[float] = mapped_column(Float)           # positive = credit, negative = debit
+    delta: Mapped[float] = mapped_column(Float)
     reason: Mapped[CoinTxReason] = mapped_column(Enum(CoinTxReason))
-    reference_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # booking_id etc.
+    reference_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     note: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

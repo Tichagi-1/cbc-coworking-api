@@ -13,8 +13,7 @@ from app.models import (
     Building,
     Floor,
     Lease,
-    MeetingRoom,
-    Unit,
+    Resource,
     Zone,
     User,
     UserRole,
@@ -70,20 +69,22 @@ class FloorPatch(BaseModel):
 class ZoneOut(BaseModel):
     id: int
     floor_id: int
-    unit_id: int | None
+    resource_id: int | None = None
     points: list
-    label: str | None
-    zone_type: str
+    label: str | None = None
+    # Convenience fields joined from the linked resource so the canvas
+    # can render fill/border/label without a second request.
+    resource_type: str | None = None
+    status: str | None = None
 
     class Config:
         from_attributes = True
 
 
 class ZoneUpsert(BaseModel):
-    unit_id: int | None = None
+    resource_id: int | None = None
     points: list
     label: str | None = None
-    zone_type: str
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────
@@ -179,11 +180,10 @@ async def delete_floor(
     _=Depends(require_role(UserRole.admin, UserRole.manager)),
 ):
     """
-    Cascade-delete a floor and everything that hangs off it. Order is
-    important because none of the FKs have ON DELETE CASCADE configured:
-        bookings → meeting_rooms → leases → zones → units → floor
-    Coin transactions reference bookings only via a non-FK integer
-    column, so they're left alone.
+    Cascade-delete a floor and everything that hangs off it. Order:
+        bookings → resources → zones → floor
+    Resources on this floor are deleted (and any bookings tied to them
+    first). Tenants and coin transactions are unaffected.
     """
     result = await db.execute(
         select(Floor).where(Floor.id == floor_id, Floor.building_id == building_id)
@@ -193,51 +193,31 @@ async def delete_floor(
         raise HTTPException(status_code=404, detail="Floor not found")
 
     try:
-        # Units on this floor
-        units_result = await db.execute(
-            select(Unit).where(Unit.floor_id == floor_id)
+        # Resources on this floor
+        res_result = await db.execute(
+            select(Resource).where(Resource.floor_id == floor_id)
         )
-        units = units_result.scalars().all()
-        unit_ids = [u.id for u in units]
+        resources = res_result.scalars().all()
+        resource_ids = [r.id for r in resources]
 
-        if unit_ids:
-            # Meeting rooms linked to those units
-            mr_result = await db.execute(
-                select(MeetingRoom).where(MeetingRoom.unit_id.in_(unit_ids))
+        if resource_ids:
+            # Bookings tied to those resources
+            bookings_result = await db.execute(
+                select(Booking).where(Booking.resource_id.in_(resource_ids))
             )
-            meeting_rooms = mr_result.scalars().all()
-            mr_ids = [m.id for m in meeting_rooms]
+            for b in bookings_result.scalars().all():
+                await db.delete(b)
 
-            # Bookings for those meeting rooms
-            if mr_ids:
-                bookings_result = await db.execute(
-                    select(Booking).where(Booking.room_id.in_(mr_ids))
-                )
-                for b in bookings_result.scalars().all():
-                    await db.delete(b)
-
-            # Meeting rooms themselves
-            for mr in meeting_rooms:
-                await db.delete(mr)
-
-            # Leases for those units
-            leases_result = await db.execute(
-                select(Lease).where(Lease.unit_id.in_(unit_ids))
-            )
-            for lease in leases_result.scalars().all():
-                await db.delete(lease)
-
-        # Zones on this floor (also covers any zones with unit_id in unit_ids,
-        # since zones live with their floor)
+        # Zones on this floor
         zones_result = await db.execute(
             select(Zone).where(Zone.floor_id == floor_id)
         )
         for z in zones_result.scalars().all():
             await db.delete(z)
 
-        # Units on the floor
-        for u in units:
-            await db.delete(u)
+        # Resources themselves
+        for r in resources:
+            await db.delete(r)
 
         # Finally the floor itself
         await db.delete(floor)
@@ -274,7 +254,6 @@ async def upload_floor_plan(
     with dest_path.open("wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    # PDF → PNG conversion
     if ext == ".pdf":
         from pdf2image import convert_from_path
         images = convert_from_path(str(dest_path), dpi=150, first_page=1, last_page=1)
@@ -292,6 +271,18 @@ async def upload_floor_plan(
 
 # ── Zone (canvas polygon) endpoints ───────────────────────────────────────
 
+def _zone_to_out(z: Zone, resource: Resource | None) -> dict:
+    return {
+        "id": z.id,
+        "floor_id": z.floor_id,
+        "resource_id": z.resource_id,
+        "points": z.points,
+        "label": z.label or (resource.name if resource else None),
+        "resource_type": resource.resource_type if resource else None,
+        "status": resource.status if resource else None,
+    }
+
+
 @router.get("/{building_id}/floors/{floor_id}/zones", response_model=list[ZoneOut])
 async def get_zones(
     building_id: int,
@@ -299,8 +290,21 @@ async def get_zones(
     db: AsyncSession = Depends(get_db),
     _=Depends(get_current_user),
 ):
-    result = await db.execute(select(Zone).where(Zone.floor_id == floor_id))
-    return result.scalars().all()
+    zones_result = await db.execute(select(Zone).where(Zone.floor_id == floor_id))
+    zones = zones_result.scalars().all()
+
+    resource_ids = [z.resource_id for z in zones if z.resource_id is not None]
+    res_by_id: dict[int, Resource] = {}
+    if resource_ids:
+        res_result = await db.execute(
+            select(Resource).where(Resource.id.in_(resource_ids))
+        )
+        res_by_id = {r.id: r for r in res_result.scalars().all()}
+
+    return [
+        _zone_to_out(z, res_by_id.get(z.resource_id) if z.resource_id else None)
+        for z in zones
+    ]
 
 
 @router.get("/{building_id}/floors/{floor_id}/snapshot")
@@ -312,10 +316,11 @@ async def floor_snapshot(
     _=Depends(get_current_user),
 ):
     """
-    Return zones for a floor with status synthesized from lease history
-    as of `date`. A zone is "occupied" if its linked unit has any lease
-    where start_date <= date AND end_date >= date, otherwise "vacant".
-    Reserved is not derivable from history; only occupied/vacant.
+    Historical zone snapshot. Reads the leases table directly via the
+    legacy Lease model (which still references the old units table).
+    Resources don't yet have lease history, so for now this returns the
+    current resource status; the lease check is preserved as a stub for
+    when leases are migrated to reference resources.
     """
     try:
         snapshot_dt = datetime.strptime(date, "%Y-%m-%d")
@@ -325,38 +330,15 @@ async def floor_snapshot(
     zones_result = await db.execute(select(Zone).where(Zone.floor_id == floor_id))
     zones = zones_result.scalars().all()
 
-    unit_ids = [z.unit_id for z in zones if z.unit_id is not None]
-    units_by_id: dict[int, Unit] = {}
-    occupied_unit_ids: set[int] = set()
-
-    if unit_ids:
-        units_result = await db.execute(select(Unit).where(Unit.id.in_(unit_ids)))
-        for u in units_result.scalars().all():
-            units_by_id[u.id] = u
-
-        leases_result = await db.execute(
-            select(Lease).where(
-                Lease.unit_id.in_(unit_ids),
-                Lease.start_date <= snapshot_dt,
-                Lease.end_date >= snapshot_dt,
-            )
+    resource_ids = [z.resource_id for z in zones if z.resource_id is not None]
+    res_by_id: dict[int, Resource] = {}
+    if resource_ids:
+        res_result = await db.execute(
+            select(Resource).where(Resource.id.in_(resource_ids))
         )
-        occupied_unit_ids = {l.unit_id for l in leases_result.scalars().all()}
+        res_by_id = {r.id: r for r in res_result.scalars().all()}
 
-    return [
-        {
-            "id": z.id,
-            "floor_id": z.floor_id,
-            "unit_id": z.unit_id,
-            "points": z.points,
-            "label": z.label or (units_by_id.get(z.unit_id).name if z.unit_id in units_by_id else None),
-            "zone_type": z.zone_type,
-            "status": (
-                "occupied" if z.unit_id and z.unit_id in occupied_unit_ids else "vacant"
-            ) if z.unit_id else None,
-        }
-        for z in zones
-    ]
+    return [_zone_to_out(z, res_by_id.get(z.resource_id) if z.resource_id else None) for z in zones]
 
 
 @router.put("/{building_id}/floors/{floor_id}/zones")

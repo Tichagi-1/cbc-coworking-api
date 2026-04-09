@@ -12,50 +12,48 @@ from app.models import (
     BookingPaymentType,
     CoinTransaction,
     CoinTxReason,
-    MeetingRoom,
+    Resource,
+    ResourceType,
     Tenant,
-    Unit,
     User,
     UserRole,
 )
 from app.core.auth import get_current_user, require_role
 
 
-# Two routers in one file so the file maps to "bookings" feature.
+# /meeting-rooms is now a thin compat wrapper that queries Resource where
+# resource_type='meeting_room'. Frontend code that's already in flight may
+# still call it; new code should use /resources?type=meeting_room directly.
 rooms_router = APIRouter(prefix="/meeting-rooms", tags=["meeting-rooms"])
 bookings_router = APIRouter(prefix="/bookings", tags=["bookings"])
 
 
 # ── Schemas ─────────────────────────────────────────────────────────────────
 
-class UnitMini(BaseModel):
+class ResourceMini(BaseModel):
     id: int
     name: str
-    floor_id: int
+    floor_id: int | None
 
     class Config:
         from_attributes = True
 
 
 class MeetingRoomOut(BaseModel):
+    """
+    Compatibility shape — historically returned from /meeting-rooms. We now
+    project Resource rows into this shape so existing frontend code keeps
+    working during the transition.
+    """
     id: int
-    unit_id: int
+    unit_id: int  # legacy alias for resource id
     name: str
     capacity: int
     rate_coins_per_hour: float
     rate_money_per_hour: float
     amenities: list | None
     is_active: bool
-    unit: UnitMini | None = None
-
-
-class MeetingRoomCreate(BaseModel):
-    unit_id: int
-    name: str
-    capacity: int
-    rate_coins_per_hour: float
-    rate_money_per_hour: float
-    amenities: list[str] | None = None
+    unit: ResourceMini | None = None
 
 
 class SlotOut(BaseModel):
@@ -65,7 +63,7 @@ class SlotOut(BaseModel):
 
 class BookingOut(BaseModel):
     id: int
-    room_id: int
+    resource_id: int | None
     tenant_id: int
     start_time: datetime
     end_time: datetime
@@ -73,12 +71,17 @@ class BookingOut(BaseModel):
     coins_charged: float
     money_charged: float
 
+    # Legacy alias so existing frontend code that reads `room_id` still works
+    @property
+    def room_id(self) -> int | None:  # pragma: no cover
+        return self.resource_id
+
     class Config:
         from_attributes = True
 
 
 class BookingCreate(BaseModel):
-    room_id: int
+    resource_id: int
     tenant_id: int
     start_time: datetime
     end_time: datetime
@@ -99,26 +102,21 @@ def _is_admin(user: User) -> bool:
     return user.role in (UserRole.admin, UserRole.manager)
 
 
-async def _hydrate_room(db: AsyncSession, room: MeetingRoom) -> MeetingRoomOut:
-    unit = await db.get(Unit, room.unit_id)
+def _project_room(r: Resource) -> MeetingRoomOut:
     return MeetingRoomOut(
-        id=room.id,
-        unit_id=room.unit_id,
-        name=room.name,
-        capacity=room.capacity,
-        rate_coins_per_hour=room.rate_coins_per_hour,
-        rate_money_per_hour=room.rate_money_per_hour,
-        amenities=room.amenities,
-        is_active=room.is_active,
-        unit=(
-            UnitMini(id=unit.id, name=unit.name, floor_id=unit.floor_id)
-            if unit
-            else None
-        ),
+        id=r.id,
+        unit_id=r.id,
+        name=r.name,
+        capacity=r.capacity or 0,
+        rate_coins_per_hour=r.rate_coins_per_hour or 0,
+        rate_money_per_hour=r.rate_money_per_hour or 0,
+        amenities=r.amenities,
+        is_active=True,
+        unit=ResourceMini(id=r.id, name=r.name, floor_id=r.floor_id),
     )
 
 
-# ── Meeting rooms ───────────────────────────────────────────────────────────
+# ── /meeting-rooms compat shim ─────────────────────────────────────────────
 
 @rooms_router.get("", response_model=list[MeetingRoomOut])
 async def list_meeting_rooms(
@@ -126,27 +124,9 @@ async def list_meeting_rooms(
     _=Depends(get_current_user),
 ):
     result = await db.execute(
-        select(MeetingRoom).where(MeetingRoom.is_active == True)  # noqa: E712
+        select(Resource).where(Resource.resource_type == ResourceType.meeting_room)
     )
-    rooms = result.scalars().all()
-    return [await _hydrate_room(db, r) for r in rooms]
-
-
-@rooms_router.post("", response_model=MeetingRoomOut)
-async def create_meeting_room(
-    data: MeetingRoomCreate,
-    db: AsyncSession = Depends(get_db),
-    _=Depends(require_role(UserRole.admin, UserRole.manager)),
-):
-    unit = await db.get(Unit, data.unit_id)
-    if not unit:
-        raise HTTPException(status_code=404, detail="Unit not found")
-
-    room = MeetingRoom(**data.model_dump())
-    db.add(room)
-    await db.commit()
-    await db.refresh(room)
-    return await _hydrate_room(db, room)
+    return [_project_room(r) for r in result.scalars().all()]
 
 
 @rooms_router.get("/{room_id}/availability", response_model=list[SlotOut])
@@ -161,16 +141,16 @@ async def room_availability(
     except ValueError:
         raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
 
-    room = await db.get(MeetingRoom, room_id)
-    if not room:
-        raise HTTPException(status_code=404, detail="Room not found")
+    resource = await db.get(Resource, room_id)
+    if not resource or resource.resource_type != ResourceType.meeting_room:
+        raise HTTPException(status_code=404, detail="Meeting room not found")
 
     day_start = datetime.combine(d, time(0, 0))
     day_end = day_start + timedelta(days=1)
 
     bookings_result = await db.execute(
         select(Booking).where(
-            Booking.room_id == room_id,
+            Booking.resource_id == room_id,
             Booking.start_time < day_end,
             Booking.end_time > day_start,
         )
@@ -178,7 +158,6 @@ async def room_availability(
     existing = bookings_result.scalars().all()
 
     slots: list[SlotOut] = []
-    # 24 slots of 30 minutes from 08:00 to 20:00 (last slot is 19:30–20:00)
     for i in range(24):
         slot_start = datetime.combine(d, time(8, 0)) + timedelta(minutes=30 * i)
         slot_end = slot_start + timedelta(minutes=30)
@@ -207,7 +186,6 @@ async def create_booking(
     if duration_hours <= 0:
         raise HTTPException(status_code=400, detail="duration must be positive")
 
-    # Authorization: tenants can only book for their own tenant record
     if not _is_admin(user):
         my_tenant = await _get_tenant_for_user(db, user)
         if not my_tenant or my_tenant.id != data.tenant_id:
@@ -219,14 +197,17 @@ async def create_booking(
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
-    room = await db.get(MeetingRoom, data.room_id)
-    if not room:
-        raise HTTPException(status_code=404, detail="Room not found")
+    resource = await db.get(Resource, data.resource_id)
+    if not resource:
+        raise HTTPException(status_code=404, detail="Resource not found")
 
-    # Overlap check
+    coins_rate = resource.rate_coins_per_hour or 0
+    money_rate = resource.rate_money_per_hour or 0
+
+    # Overlap check on the resource
     overlap_result = await db.execute(
         select(Booking).where(
-            Booking.room_id == data.room_id,
+            Booking.resource_id == data.resource_id,
             Booking.start_time < data.end_time,
             Booking.end_time > data.start_time,
         )
@@ -236,7 +217,7 @@ async def create_booking(
             status_code=409, detail="Time slot overlaps existing booking"
         )
 
-    coins_needed = duration_hours * room.rate_coins_per_hour
+    coins_needed = duration_hours * coins_rate
     coins_used = 0.0
     money_charged = 0.0
     payment_type = BookingPaymentType.money
@@ -248,15 +229,11 @@ async def create_booking(
         else:
             coins_used = tenant.coin_balance
             coins_remaining = coins_needed - coins_used
-            ratio = (
-                room.rate_money_per_hour / room.rate_coins_per_hour
-                if room.rate_coins_per_hour > 0
-                else 0
-            )
+            ratio = (money_rate / coins_rate) if coins_rate > 0 else 0
             money_charged = round(coins_remaining * ratio, 2)
             payment_type = BookingPaymentType.money
     else:
-        money_charged = round(duration_hours * room.rate_money_per_hour, 2)
+        money_charged = round(duration_hours * money_rate, 2)
         payment_type = BookingPaymentType.money
 
     if coins_used > 0:
@@ -265,12 +242,12 @@ async def create_booking(
             tenant_id=tenant.id,
             delta=-coins_used,
             reason=CoinTxReason.booking_debit,
-            note=f"Booking {room.name}",
+            note=f"Booking {resource.name}",
         )
         db.add(tx)
 
     booking = Booking(
-        room_id=data.room_id,
+        resource_id=data.resource_id,
         tenant_id=data.tenant_id,
         start_time=data.start_time,
         end_time=data.end_time,
@@ -287,7 +264,7 @@ async def create_booking(
 
 @bookings_router.get("", response_model=list[BookingOut])
 async def list_bookings(
-    room_id: int | None = None,
+    resource_id: int | None = None,
     tenant_id: int | None = None,
     date: str | None = None,
     db: AsyncSession = Depends(get_db),
@@ -301,8 +278,8 @@ async def list_bookings(
             return []
         query = query.where(Booking.tenant_id == my_tenant.id)
 
-    if room_id is not None:
-        query = query.where(Booking.room_id == room_id)
+    if resource_id is not None:
+        query = query.where(Booking.resource_id == resource_id)
     if tenant_id is not None:
         query = query.where(Booking.tenant_id == tenant_id)
     if date:
@@ -337,7 +314,6 @@ async def cancel_booking(
                 status_code=403, detail="Cannot cancel another tenant's booking"
             )
 
-    # Refund coins (reverse the original debit)
     if booking.coins_charged > 0:
         tenant = await db.get(Tenant, booking.tenant_id)
         if tenant:
