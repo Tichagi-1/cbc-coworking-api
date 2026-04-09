@@ -122,6 +122,10 @@ class Unit(Base):
     area_m2: Mapped[float] = mapped_column(Float)
     seats: Mapped[int] = mapped_column(Integer, default=1)
     monthly_rate: Mapped[float] = mapped_column(Float, default=0)
+    # "month" | "day" | "biweekly" | "hour" — meaning of monthly_rate column
+    rate_period: Mapped[str | None] = mapped_column(String(20), nullable=True, default="month")
+    # Manually entered tenant name. Will sync from Zoho Contracts in future.
+    tenant_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     photos: Mapped[list | None] = mapped_column(JSON, nullable=True)  # [url, ...]
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

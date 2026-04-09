@@ -38,7 +38,20 @@ async def startup():
     os.makedirs("/data/uploads/floor_plans", exist_ok=True)
     try:
         async with engine.begin() as conn:
+            # Create any missing tables (idempotent — only adds tables, not columns)
             await conn.run_sync(Base.metadata.create_all)
+            # In-place column additions for tables that already exist.
+            # IF NOT EXISTS keeps this idempotent across restarts.
+            await conn.execute(
+                text(
+                    "ALTER TABLE units ADD COLUMN IF NOT EXISTS tenant_name VARCHAR(255)"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE units ADD COLUMN IF NOT EXISTS rate_period VARCHAR(20) DEFAULT 'month'"
+                )
+            )
     except Exception as e:
         print(f"DB init warning: {e}")
 

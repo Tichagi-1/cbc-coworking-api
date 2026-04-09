@@ -53,6 +53,10 @@ class FloorCreate(BaseModel):
     name: str | None = None
 
 
+class FloorPatch(BaseModel):
+    name: str | None = None
+
+
 class ZoneOut(BaseModel):
     id: int
     floor_id: int
@@ -131,6 +135,54 @@ async def create_floor(
     await db.commit()
     await db.refresh(floor)
     return floor
+
+
+@router.patch("/{building_id}/floors/{floor_id}", response_model=FloorOut)
+async def update_floor(
+    building_id: int,
+    floor_id: int,
+    data: FloorPatch,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_role(UserRole.admin, UserRole.manager)),
+):
+    result = await db.execute(
+        select(Floor).where(Floor.id == floor_id, Floor.building_id == building_id)
+    )
+    floor = result.scalar_one_or_none()
+    if not floor:
+        raise HTTPException(status_code=404, detail="Floor not found")
+
+    payload = data.model_dump(exclude_unset=True)
+    for k, v in payload.items():
+        setattr(floor, k, v)
+
+    await db.commit()
+    await db.refresh(floor)
+    return floor
+
+
+@router.delete("/{building_id}/floors/{floor_id}")
+async def delete_floor(
+    building_id: int,
+    floor_id: int,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_role(UserRole.admin, UserRole.manager)),
+):
+    result = await db.execute(
+        select(Floor).where(Floor.id == floor_id, Floor.building_id == building_id)
+    )
+    floor = result.scalar_one_or_none()
+    if not floor:
+        raise HTTPException(status_code=404, detail="Floor not found")
+
+    # Delete zones first (no FK cascade configured)
+    zones_result = await db.execute(select(Zone).where(Zone.floor_id == floor_id))
+    for z in zones_result.scalars().all():
+        await db.delete(z)
+
+    await db.delete(floor)
+    await db.commit()
+    return {"deleted": floor_id}
 
 
 @router.post("/{building_id}/floors/{floor_id}/plan")

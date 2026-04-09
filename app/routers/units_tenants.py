@@ -21,6 +21,8 @@ class UnitOut(BaseModel):
     area_m2: float
     seats: int
     monthly_rate: float
+    rate_period: str | None = "month"
+    tenant_name: str | None = None
     description: str | None
     photos: list | None
 
@@ -35,6 +37,18 @@ class UnitCreate(BaseModel):
     area_m2: float
     seats: int = 1
     monthly_rate: float = 0
+    rate_period: str | None = "month"
+    description: str | None = None
+
+
+class UnitPatch(BaseModel):
+    name: str | None = None
+    area_m2: float | None = None
+    seats: int | None = None
+    monthly_rate: float | None = None
+    rate_period: str | None = None
+    status: UnitStatus | None = None
+    tenant_name: str | None = None
     description: str | None = None
 
 
@@ -74,6 +88,26 @@ async def create_unit(
 ):
     unit = Unit(**data.model_dump())
     db.add(unit)
+    await db.commit()
+    await db.refresh(unit)
+    return unit
+
+
+@units_router.patch("/{unit_id}", response_model=UnitOut)
+async def update_unit(
+    unit_id: int,
+    data: UnitPatch,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_role(UserRole.admin, UserRole.manager)),
+):
+    unit = await db.get(Unit, unit_id)
+    if not unit:
+        raise HTTPException(status_code=404, detail="Unit not found")
+
+    payload = data.model_dump(exclude_unset=True)
+    for k, v in payload.items():
+        setattr(unit, k, v)
+
     await db.commit()
     await db.refresh(unit)
     return unit
