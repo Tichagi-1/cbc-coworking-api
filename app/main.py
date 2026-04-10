@@ -13,6 +13,7 @@ from app.routers.units_tenants import tenants_router
 from app.routers.resources import router as resources_router
 from app.routers.bookings import rooms_router, bookings_router
 from app.routers.plans import router as plans_router
+from app.routers.workspace import router as workspace_router
 
 app = FastAPI(
     title="CBC Coworking OS — API",
@@ -199,6 +200,7 @@ app.include_router(resources_router)
 app.include_router(plans_router)
 app.include_router(rooms_router)
 app.include_router(bookings_router)
+app.include_router(workspace_router)
 
 
 @app.get("/health")
