@@ -94,6 +94,14 @@ async def startup():
                 "money_charged_uzs FLOAT DEFAULT 0"
             ))
 
+            # Step 8: Widen userrole enum for receptionist
+            try:
+                await conn.execute(text(
+                    "ALTER TYPE userrole ADD VALUE IF NOT EXISTS 'receptionist'"
+                ))
+            except Exception:
+                pass  # already exists or DB doesn't support IF NOT EXISTS
+
             # Step 7: Plans feature
             await conn.execute(text(
                 "ALTER TABLE resources ADD COLUMN IF NOT EXISTS "

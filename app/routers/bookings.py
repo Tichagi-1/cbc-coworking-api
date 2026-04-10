@@ -107,7 +107,7 @@ async def _get_tenant_for_user(db: AsyncSession, user: User) -> Optional[Tenant]
 
 
 def _is_admin(user: User) -> bool:
-    return user.role in (UserRole.admin, UserRole.manager)
+    return user.role in (UserRole.admin, UserRole.manager, UserRole.receptionist)
 
 
 def _project_room(r: Resource) -> MeetingRoomOut:
