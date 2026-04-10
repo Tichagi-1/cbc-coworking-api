@@ -13,6 +13,7 @@ from app.models import (
     UnitStatus,
     Building,
     Floor,
+    Zone,
     User,
     UserRole,
 )
@@ -173,9 +174,19 @@ async def update_resource(
     if not resource:
         raise HTTPException(status_code=404, detail="Resource not found")
 
+    old_name = resource.name
     payload = data.model_dump(exclude_unset=True)
     for k, v in payload.items():
         setattr(resource, k, v)
+
+    # Propagate name change to zone labels so canvas stays in sync
+    if "name" in payload and payload["name"] != old_name:
+        zones_result = await db.execute(
+            select(Zone).where(Zone.resource_id == resource_id)
+        )
+        for z in zones_result.scalars().all():
+            if z.label == old_name or z.label is None:
+                z.label = resource.name
 
     await db.commit()
     await db.refresh(resource)
