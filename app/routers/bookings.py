@@ -90,6 +90,11 @@ class BookingCreate(BaseModel):
     end_time: datetime
 
 
+class BookingPatch(BaseModel):
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+
+
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 def _hours_between(start: datetime, end: datetime) -> float:
@@ -323,6 +328,50 @@ async def list_bookings(
 
     result = await db.execute(query.order_by(Booking.start_time))
     return result.scalars().all()
+
+
+@bookings_router.patch("/{booking_id}", response_model=BookingOut)
+async def update_booking(
+    booking_id: int,
+    data: BookingPatch,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    booking = await db.get(Booking, booking_id)
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found")
+
+    if not _is_admin(user):
+        my_tenant = await _get_tenant_for_user(db, user)
+        if not my_tenant or booking.tenant_id != my_tenant.id:
+            raise HTTPException(
+                status_code=403, detail="Cannot edit another tenant's booking"
+            )
+
+    new_start = data.start_time or booking.start_time
+    new_end = data.end_time or booking.end_time
+    if new_end <= new_start:
+        raise HTTPException(status_code=400, detail="end_time must be after start_time")
+
+    # Overlap check — exclude self
+    overlap_result = await db.execute(
+        select(Booking).where(
+            Booking.resource_id == booking.resource_id,
+            Booking.id != booking_id,
+            Booking.start_time < new_end,
+            Booking.end_time > new_start,
+        )
+    )
+    if overlap_result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=409, detail="Time slot overlaps existing booking"
+        )
+
+    booking.start_time = new_start
+    booking.end_time = new_end
+    await db.commit()
+    await db.refresh(booking)
+    return booking
 
 
 @bookings_router.delete("/{booking_id}")
