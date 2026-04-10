@@ -12,6 +12,7 @@ from app.routers.buildings import router as buildings_router
 from app.routers.units_tenants import tenants_router
 from app.routers.resources import router as resources_router
 from app.routers.bookings import rooms_router, bookings_router
+from app.routers.plans import router as plans_router
 
 app = FastAPI(
     title="CBC Coworking OS — API",
@@ -90,6 +91,16 @@ async def startup():
             await conn.execute(text(
                 "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS "
                 "money_charged_uzs FLOAT DEFAULT 0"
+            ))
+
+            # Step 7: Plans feature
+            await conn.execute(text(
+                "ALTER TABLE resources ADD COLUMN IF NOT EXISTS "
+                "plan_id INTEGER REFERENCES plans(id)"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS "
+                "coin_last_reset TIMESTAMP"
             ))
 
             # Step 5: data migration — only if resources is empty.
@@ -185,6 +196,7 @@ app.include_router(auth_router)
 app.include_router(buildings_router)
 app.include_router(tenants_router)
 app.include_router(resources_router)
+app.include_router(plans_router)
 app.include_router(rooms_router)
 app.include_router(bookings_router)
 

@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from app.database import get_db
 from app.models import Tenant, CoinTransaction, User, UserRole, CoinTxReason
 from app.core.auth import get_current_user, require_role
+from app.services.coins import calculate_tenant_coins, reset_tenant_coins
 
 
 # units_router was removed in the resource catalog refactor — Unit/MeetingRoom
@@ -116,3 +117,53 @@ async def coin_history(
     )
     txs = result.scalars().all()
     return [{"id": t.id, "delta": t.delta, "reason": t.reason, "note": t.note, "created_at": t.created_at} for t in txs]
+
+
+@tenants_router.post("/{tenant_id}/coins/reset")
+async def reset_coins(
+    tenant_id: int,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_role(UserRole.admin)),
+):
+    """Reset coin balance based on tenant's occupied resources and their plans."""
+    try:
+        result = await reset_tenant_coins(tenant_id, db)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return result
+
+
+@tenants_router.get("/{tenant_id}/coin-summary")
+async def coin_summary(
+    tenant_id: int,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    """Return breakdown of coins by resource, current balance, and next reset info."""
+    tenant_result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+    tenant = tenant_result.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    total_coins, breakdown = await calculate_tenant_coins(tenant_id, db)
+
+    # Compute next_reset: coin_last_reset + 1 month (approximate via coin_reset_day)
+    next_reset = None
+    if tenant.coin_last_reset:
+        from datetime import datetime
+        month = tenant.coin_last_reset.month % 12 + 1
+        year = tenant.coin_last_reset.year + (1 if month == 1 else 0)
+        try:
+            next_reset = tenant.coin_last_reset.replace(year=year, month=month, day=1).isoformat()
+        except ValueError:
+            next_reset = None
+
+    return {
+        "tenant_id": tenant.id,
+        "company_name": tenant.company_name,
+        "coin_balance": tenant.coin_balance,
+        "coin_last_reset": tenant.coin_last_reset.isoformat() if tenant.coin_last_reset else None,
+        "next_reset": next_reset,
+        "projected_coins": round(total_coins, 2),
+        "breakdown": breakdown,
+    }

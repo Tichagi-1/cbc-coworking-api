@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from app.database import get_db
 from app.models import (
+    Plan,
     Resource,
     ResourceType,
     UnitStatus,
@@ -52,6 +53,9 @@ class ResourceOut(BaseModel):
     min_advance_minutes: int = 0
     resident_discount_pct: int = 0
 
+    plan_id: int | None = None
+    effective_monthly_rate: float | None = None
+
     zoho_contract_id: str | None = None
     created_at: datetime | None = None
 
@@ -85,6 +89,8 @@ class ResourceCreate(BaseModel):
     min_advance_minutes: int = 0
     resident_discount_pct: int = 0
 
+    plan_id: int | None = None
+
 
 class ResourcePatch(BaseModel):
     floor_id: int | None = None
@@ -111,6 +117,53 @@ class ResourcePatch(BaseModel):
     min_advance_minutes: int | None = None
     resident_discount_pct: int | None = None
 
+    plan_id: int | None = None
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────
+
+async def _enrich_resource(db: AsyncSession, r: Resource) -> dict:
+    """Convert a Resource ORM object to a dict with effective_monthly_rate computed."""
+    data = {
+        "id": r.id,
+        "building_id": r.building_id,
+        "floor_id": r.floor_id,
+        "name": r.name,
+        "resource_type": r.resource_type.value if r.resource_type else None,
+        "status": r.status.value if r.status else None,
+        "description": r.description,
+        "photos": r.photos,
+        "tenant_name": r.tenant_name,
+        "area_m2": r.area_m2,
+        "seats": r.seats,
+        "monthly_rate": r.monthly_rate,
+        "rate_period": r.rate_period,
+        "capacity": r.capacity,
+        "rate_coins_per_hour": r.rate_coins_per_hour,
+        "rate_money_per_hour": r.rate_money_per_hour,
+        "amenities": r.amenities,
+        "rate_per_hour": r.rate_per_hour,
+        "is_standalone_bookable": r.is_standalone_bookable,
+        "min_advance_minutes": r.min_advance_minutes,
+        "resident_discount_pct": r.resident_discount_pct,
+        "plan_id": r.plan_id,
+        "zoho_contract_id": r.zoho_contract_id,
+        "created_at": r.created_at,
+        "effective_monthly_rate": None,
+    }
+
+    if r.plan_id:
+        plan = await db.get(Plan, r.plan_id)
+        if plan:
+            if plan.billing_mode.value == "per_seat":
+                data["effective_monthly_rate"] = plan.base_rate_uzs * (r.seats or 1)
+            else:
+                data["effective_monthly_rate"] = plan.base_rate_uzs
+    else:
+        data["effective_monthly_rate"] = r.monthly_rate
+
+    return data
+
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
 
@@ -133,7 +186,8 @@ async def list_resources(
     if status is not None:
         query = query.where(Resource.status == status)
     result = await db.execute(query.order_by(Resource.id))
-    return result.scalars().all()
+    resources = result.scalars().all()
+    return [await _enrich_resource(db, r) for r in resources]
 
 
 @router.post("", response_model=ResourceOut)
@@ -157,7 +211,7 @@ async def create_resource(
     db.add(resource)
     await db.commit()
     await db.refresh(resource)
-    return resource
+    return await _enrich_resource(db, resource)
 
 
 @router.get("/{resource_id}", response_model=ResourceOut)
@@ -169,7 +223,7 @@ async def get_resource(
     resource = await db.get(Resource, resource_id)
     if not resource:
         raise HTTPException(status_code=404, detail="Resource not found")
-    return resource
+    return await _enrich_resource(db, resource)
 
 
 @router.patch("/{resource_id}", response_model=ResourceOut)
@@ -199,7 +253,7 @@ async def update_resource(
 
     await db.commit()
     await db.refresh(resource)
-    return resource
+    return await _enrich_resource(db, resource)
 
 
 @router.delete("/{resource_id}", status_code=204)

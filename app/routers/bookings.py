@@ -13,6 +13,7 @@ from app.models import (
     BookingPaymentType,
     CoinTransaction,
     CoinTxReason,
+    Plan,
     Resource,
     ResourceType,
     Tenant,
@@ -214,6 +215,13 @@ async def create_booking(
 
     # Compute effective rates (apply resident discount)
     discount_pct = resource.resident_discount_pct or 0
+
+    # Try to get discount from plan first
+    if tenant.is_resident and resource.plan_id:
+        plan = await db.get(Plan, resource.plan_id)
+        if plan and plan.meeting_discount_on:
+            discount_pct = plan.meeting_discount_pct
+
     discount_mult = 1.0
     if discount_pct > 0 and tenant.is_resident:
         discount_mult = 1.0 - (discount_pct / 100.0)

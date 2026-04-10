@@ -59,6 +59,11 @@ class CoinTxReason(str, enum.Enum):
     refund = "refund"
 
 
+class BillingMode(str, enum.Enum):
+    per_unit = "per_unit"
+    per_seat = "per_seat"
+
+
 # ── Models ─────────────────────────────────────────────────────────────────
 
 class User(Base):
@@ -104,6 +109,26 @@ class Floor(Base):
     zones: Mapped[list["Zone"]] = relationship(back_populates="floor")
 
 
+class Plan(Base):
+    __tablename__ = "plans"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    building_id: Mapped[int] = mapped_column(ForeignKey("buildings.id"))
+    name: Mapped[str] = mapped_column(String(255))
+    billing_mode: Mapped[BillingMode] = mapped_column(Enum(BillingMode), default=BillingMode.per_unit)
+    base_rate_uzs: Mapped[float] = mapped_column(Float, default=0)
+    coin_pct: Mapped[int] = mapped_column(Integer, default=25)
+    coin_reset_day: Mapped[int] = mapped_column(Integer, default=1)
+    meeting_discount_pct: Mapped[int] = mapped_column(Integer, default=0)
+    meeting_discount_on: Mapped[bool] = mapped_column(Boolean, default=False)
+    event_discount_pct: Mapped[int] = mapped_column(Integer, default=0)
+    event_discount_on: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    building: Mapped["Building"] = relationship()
+    resources: Mapped[list["Resource"]] = relationship(back_populates="plan")
+
+
 class Resource(Base):
     """
     Unified catalog row for any bookable / leasable space:
@@ -142,11 +167,14 @@ class Resource(Base):
     min_advance_minutes: Mapped[int] = mapped_column(Integer, default=0)
     resident_discount_pct: Mapped[int] = mapped_column(Integer, default=0)
 
+    plan_id: Mapped[int | None] = mapped_column(ForeignKey("plans.id"), nullable=True)
+
     zoho_contract_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     building: Mapped[Building] = relationship()
     floor: Mapped["Floor | None"] = relationship()
+    plan: Mapped["Plan | None"] = relationship(back_populates="resources")
     zones: Mapped[list["Zone"]] = relationship(back_populates="resource")
     bookings: Mapped[list["Booking"]] = relationship(back_populates="resource")
 
@@ -182,6 +210,7 @@ class Tenant(Base):
     monthly_rate: Mapped[float] = mapped_column(Float, default=0)
     coin_balance: Mapped[float] = mapped_column(Float, default=0)
     is_resident: Mapped[bool] = mapped_column(Boolean, default=True)
+    coin_last_reset: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     zoho_contact_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
