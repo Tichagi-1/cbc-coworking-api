@@ -14,6 +14,7 @@ from app.routers.resources import router as resources_router
 from app.routers.bookings import rooms_router, bookings_router
 from app.routers.plans import router as plans_router
 from app.routers.workspace import router as workspace_router
+from app.routers.admin import router as admin_router
 
 app = FastAPI(
     title="CBC Coworking OS — API",
@@ -209,6 +210,33 @@ async def startup():
     except Exception as e:
         print(f"DB init warning: {e}")
 
+    # Start monthly coin-reset cron (1st of each month at 00:00 Tashkent)
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from app.database import AsyncSessionLocal
+        from app.services.cron import run_monthly_coin_reset as _cron_reset
+
+        scheduler = AsyncIOScheduler()
+
+        async def _monthly_reset_job():
+            async with AsyncSessionLocal() as db:
+                await _cron_reset(db)
+
+        scheduler.add_job(
+            _monthly_reset_job,
+            trigger="cron",
+            day=1,
+            hour=0,
+            minute=0,
+            timezone="Asia/Tashkent",
+            id="monthly_coin_reset",
+            replace_existing=True,
+        )
+        scheduler.start()
+        print("Coin reset cron scheduled: 1st of month 00:00 Tashkent")
+    except Exception as e:
+        print(f"Scheduler warning: {e}")
+
 
 # Routers
 app.include_router(auth_router)
@@ -219,6 +247,7 @@ app.include_router(plans_router)
 app.include_router(rooms_router)
 app.include_router(bookings_router)
 app.include_router(workspace_router)
+app.include_router(admin_router)
 
 
 @app.get("/health")
