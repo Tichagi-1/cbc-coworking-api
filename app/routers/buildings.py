@@ -277,7 +277,10 @@ def _zone_to_out(z: Zone, resource: Resource | None) -> dict:
         "floor_id": z.floor_id,
         "resource_id": z.resource_id,
         "points": z.points,
-        "label": z.label or (resource.name if resource else None),
+        # Resource name takes priority over zone.label — guarantees
+        # the canvas shows the current resource name even if zone.label
+        # is stale from before a rename.
+        "label": (resource.name if resource else None) or z.label,
         "resource_type": resource.resource_type if resource else None,
         "status": resource.status if resource else None,
     }
