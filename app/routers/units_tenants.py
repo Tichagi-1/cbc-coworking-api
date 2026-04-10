@@ -41,6 +41,15 @@ class TenantCreate(BaseModel):
     is_resident: bool = True
 
 
+class TenantPatch(BaseModel):
+    company_name: str | None = None
+    contact_name: str | None = None
+    contact_phone: str | None = None
+    plan_type: str | None = None
+    monthly_rate: float | None = None
+    is_resident: bool | None = None
+
+
 class CoinAdjust(BaseModel):
     delta: float
     note: str | None = None
@@ -73,6 +82,38 @@ async def create_tenant(
     if tenant.monthly_rate > 0:
         tenant.coin_balance = round(tenant.monthly_rate * 0.25, 2)
     db.add(tenant)
+    await db.commit()
+    await db.refresh(tenant)
+    return tenant
+
+
+@tenants_router.get("/{tenant_id}", response_model=TenantOut)
+async def get_tenant(
+    tenant_id: int,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    tenant = await db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return tenant
+
+
+@tenants_router.patch("/{tenant_id}", response_model=TenantOut)
+async def update_tenant(
+    tenant_id: int,
+    data: TenantPatch,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_role(UserRole.admin, UserRole.manager)),
+):
+    tenant = await db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    payload = data.model_dump(exclude_unset=True)
+    for k, v in payload.items():
+        setattr(tenant, k, v)
+
     await db.commit()
     await db.refresh(tenant)
     return tenant
