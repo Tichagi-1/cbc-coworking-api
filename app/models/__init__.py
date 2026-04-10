@@ -138,6 +138,10 @@ class Resource(Base):
     rate_per_hour: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_standalone_bookable: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    # booking policy
+    min_advance_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    resident_discount_pct: Mapped[int] = mapped_column(Integer, default=0)
+
     zoho_contract_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
@@ -222,6 +226,7 @@ class Booking(Base):
     payment_type: Mapped[BookingPaymentType] = mapped_column(Enum(BookingPaymentType))
     coins_charged: Mapped[float] = mapped_column(Float, default=0)
     money_charged: Mapped[float] = mapped_column(Float, default=0)
+    money_charged_uzs: Mapped[float] = mapped_column(Float, default=0)
     zoho_invoice_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     source: Mapped[str] = mapped_column(String(50), default="web")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

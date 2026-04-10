@@ -7,6 +7,7 @@ from sqlalchemy import select
 from pydantic import BaseModel
 
 from app.database import get_db
+from app.config import settings
 from app.models import (
     Booking,
     BookingPaymentType,
@@ -70,6 +71,7 @@ class BookingOut(BaseModel):
     payment_type: str
     coins_charged: float
     money_charged: float
+    money_charged_uzs: float = 0
 
     # Legacy alias so existing frontend code that reads `room_id` still works
     @property
@@ -201,8 +203,23 @@ async def create_booking(
     if not resource:
         raise HTTPException(status_code=404, detail="Resource not found")
 
+    # Lead-time validation
+    if resource.min_advance_minutes and resource.min_advance_minutes > 0:
+        earliest = datetime.utcnow() + timedelta(minutes=resource.min_advance_minutes)
+        if data.start_time < earliest:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Booking must be at least {resource.min_advance_minutes} minutes in advance",
+            )
+
+    # Compute effective rates (apply resident discount)
+    discount_pct = resource.resident_discount_pct or 0
+    discount_mult = 1.0
+    if discount_pct > 0 and tenant.is_resident:
+        discount_mult = 1.0 - (discount_pct / 100.0)
+
     coins_rate = resource.rate_coins_per_hour or 0
-    money_rate = resource.rate_money_per_hour or 0
+    money_rate = (resource.rate_money_per_hour or 0) * discount_mult
 
     # Overlap check on the resource
     overlap_result = await db.execute(
@@ -246,6 +263,8 @@ async def create_booking(
         )
         db.add(tx)
 
+    money_charged_uzs = round(money_charged * settings.UZS_RATE, 2)
+
     booking = Booking(
         resource_id=data.resource_id,
         tenant_id=data.tenant_id,
@@ -254,6 +273,7 @@ async def create_booking(
         payment_type=payment_type,
         coins_charged=coins_used,
         money_charged=money_charged,
+        money_charged_uzs=money_charged_uzs,
         source="web",
     )
     db.add(booking)

@@ -78,6 +78,20 @@ async def startup():
                 "ALTER TABLE bookings ALTER COLUMN room_id DROP NOT NULL"
             ))
 
+            # Step 6: new columns for improvements (lead time, discount, UZS)
+            await conn.execute(text(
+                "ALTER TABLE resources ADD COLUMN IF NOT EXISTS "
+                "min_advance_minutes INTEGER DEFAULT 0"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE resources ADD COLUMN IF NOT EXISTS "
+                "resident_discount_pct INTEGER DEFAULT 0"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS "
+                "money_charged_uzs FLOAT DEFAULT 0"
+            ))
+
             # Step 5: data migration — only if resources is empty.
             count_result = await conn.execute(
                 text("SELECT count(*) FROM resources")

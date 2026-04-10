@@ -49,6 +49,9 @@ class ResourceOut(BaseModel):
     rate_per_hour: float | None = None
     is_standalone_bookable: bool = True
 
+    min_advance_minutes: int = 0
+    resident_discount_pct: int = 0
+
     zoho_contract_id: str | None = None
     created_at: datetime | None = None
 
@@ -79,6 +82,9 @@ class ResourceCreate(BaseModel):
     rate_per_hour: float | None = None
     is_standalone_bookable: bool = True
 
+    min_advance_minutes: int = 0
+    resident_discount_pct: int = 0
+
 
 class ResourcePatch(BaseModel):
     floor_id: int | None = None
@@ -101,6 +107,9 @@ class ResourcePatch(BaseModel):
 
     rate_per_hour: float | None = None
     is_standalone_bookable: bool | None = None
+
+    min_advance_minutes: int | None = None
+    resident_discount_pct: int | None = None
 
 
 # ── Endpoints ───────────────────────────────────────────────────────────────

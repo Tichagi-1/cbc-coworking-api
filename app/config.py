@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     REDIS_URL: str = ""
     UPLOAD_DIR: str = "/data/uploads"
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
+    UZS_RATE: float = 12800.0
 
     class Config:
         env_file = ".env"
