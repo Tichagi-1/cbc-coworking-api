@@ -26,6 +26,9 @@ class TenantOut(BaseModel):
     monthly_rate: float
     coin_balance: float
     is_resident: bool
+    unit_number: str | None = None
+    notes: str | None = None
+    coin_last_reset: str | None = None
 
     class Config:
         from_attributes = True
@@ -39,6 +42,8 @@ class TenantCreate(BaseModel):
     plan_type: str | None = None
     monthly_rate: float = 0
     is_resident: bool = True
+    unit_number: str | None = None
+    notes: str | None = None
 
 
 class TenantPatch(BaseModel):
@@ -48,6 +53,8 @@ class TenantPatch(BaseModel):
     plan_type: str | None = None
     monthly_rate: float | None = None
     is_resident: bool | None = None
+    unit_number: str | None = None
+    notes: str | None = None
 
 
 class CoinAdjust(BaseModel):

@@ -102,6 +102,16 @@ async def startup():
             except Exception:
                 pass  # already exists or DB doesn't support IF NOT EXISTS
 
+            # Step 9: Tenant extra fields
+            await conn.execute(text(
+                "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS "
+                "unit_number VARCHAR(100)"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS "
+                "notes TEXT"
+            ))
+
             # Step 7: Plans feature
             await conn.execute(text(
                 "ALTER TABLE resources ADD COLUMN IF NOT EXISTS "

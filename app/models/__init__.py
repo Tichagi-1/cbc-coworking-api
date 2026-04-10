@@ -212,6 +212,8 @@ class Tenant(Base):
     coin_balance: Mapped[float] = mapped_column(Float, default=0)
     is_resident: Mapped[bool] = mapped_column(Boolean, default=True)
     coin_last_reset: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    unit_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     zoho_contact_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
